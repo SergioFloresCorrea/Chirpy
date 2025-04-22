@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	auth "github.com/SergioFloresCorrea/Chirpy/internal"
 )
 
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) error {
@@ -36,4 +38,18 @@ func replaceBadWords(body string) string {
 		}
 	}
 	return strings.Join(cleanedBody, " ")
+}
+
+func hasNoBody(r *http.Request) bool {
+	// Check if Body is nil or ContentLength is zero or less
+	return r.Body == nil || r.ContentLength <= 0
+}
+
+func checkAuthHeader(r *http.Request) (string, error) {
+	headers := r.Header
+	tokenString, err := auth.GetBearerToken(headers)
+	if err != nil {
+		return "", err
+	}
+	return tokenString, nil
 }
