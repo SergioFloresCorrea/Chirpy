@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	auth "github.com/SergioFloresCorrea/Chirpy/internal"
@@ -72,10 +73,11 @@ func (cfg *apiConfig) CreateUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	type ResponseJson struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 
 	decoder := json.NewDecoder(req.Body)
@@ -105,10 +107,11 @@ func (cfg *apiConfig) CreateUser(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	responseJson := ResponseJson{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		ID:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	respondWithJSON(w, 201, responseJson)
@@ -127,6 +130,7 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, req *http.Request) {
 		Email        string    `json:"email"`
 		Token        string    `json:"token"`
 		RefreshToken string    `json:"refresh_token"`
+		IsChirpyRed  bool      `json:"is_chirpy_red"`
 	}
 
 	decoder := json.NewDecoder(req.Body)
@@ -181,6 +185,7 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, req *http.Request) {
 		Email:        user.Email,
 		Token:        tokenString,
 		RefreshToken: refreshToken,
+		IsChirpyRed:  user.IsChirpyRed,
 	}
 
 	respondWithJSON(w, http.StatusOK, responseJson)
@@ -255,15 +260,51 @@ func (cfg *apiConfig) RevokeRefreshToken(w http.ResponseWriter, req *http.Reques
 }
 
 func (cfg *apiConfig) GetAllChirps(w http.ResponseWriter, req *http.Request) {
-	chirps, err := cfg.dbQueries.GetChirps(req.Context())
-	if err != nil {
-		respondWithError(w, 400, fmt.Sprintf("%v", err))
-		return
+	authorIDStr := req.URL.Query().Get("author_id")
+	sortBy := req.URL.Query().Get("sort")
+
+	var chirps []database.Chirp
+	var err error
+
+	if sortBy == "" {
+		sortBy = "asc"
 	}
+
+	if sortBy != "asc" && sortBy != "desc" {
+		respondWithError(w, http.StatusBadRequest, "sort query must be either asc or desc")
+	}
+
+	if authorIDStr == "" {
+		chirps, err = cfg.dbQueries.GetChirps(req.Context())
+		if err != nil {
+			respondWithError(w, 400, fmt.Sprintf("%v", err))
+			return
+		}
+	} else {
+		authorID, err := uuid.Parse(authorIDStr)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid author ID format")
+			return
+		}
+		chirps, err = cfg.dbQueries.GetChirpsByUserID(req.Context(), authorID)
+		if err != nil {
+			respondWithError(w, 400, fmt.Sprintf("%v", err))
+			return
+		}
+	}
+
 	responseJson := make([]Chirp, 0, len(chirps))
 	for _, chirp := range chirps {
 		responseJson = append(responseJson, Chirp(chirp))
 	}
+
+	// sorting
+	if sortBy == "asc" {
+		sort.Slice(responseJson, func(i, j int) bool { return responseJson[i].CreatedAt.Before(responseJson[j].CreatedAt) })
+	} else if sortBy == "desc" {
+		sort.Slice(responseJson, func(i, j int) bool { return responseJson[i].CreatedAt.After(responseJson[j].CreatedAt) })
+	}
+
 	respondWithJSON(w, 200, responseJson)
 }
 
@@ -328,10 +369,11 @@ func (cfg *apiConfig) UpdateOwnEmail(w http.ResponseWriter, req *http.Request) {
 	}
 
 	type ResponseJson struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 
 	accessToken, err := checkAuthHeader(req)
@@ -372,10 +414,58 @@ func (cfg *apiConfig) UpdateOwnEmail(w http.ResponseWriter, req *http.Request) {
 	}
 
 	responseJson := ResponseJson{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		ID:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 	respondWithJSON(w, http.StatusOK, responseJson)
+}
+
+func (cfg *apiConfig) UpgradoUserToRed(w http.ResponseWriter, req *http.Request) {
+	type ExpectedJson struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID string `json:"user_id"`
+		} `json:"data"`
+	}
+
+	apiKey, err := auth.GetAPIKey(req.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	if apiKey != cfg.polkaKey {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	expectedJson := ExpectedJson{}
+	if err := decoder.Decode(&expectedJson); err != nil {
+		respondWithError(w, 400, "Something went wrong")
+		return
+	}
+	defer req.Body.Close()
+
+	if expectedJson.Event != "user.upgraded" {
+		respondWithJSON(w, http.StatusNoContent, nil)
+		return
+	}
+
+	userID, err := uuid.Parse(expectedJson.Data.UserID)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid user ID format")
+		return
+	}
+
+	err = cfg.dbQueries.UpgradeUserToRedByID(req.Context(), userID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, fmt.Sprintf("%v", err))
+		return
+	}
+
+	respondWithJSON(w, http.StatusNoContent, nil)
 }

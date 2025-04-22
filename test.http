@@ -3,7 +3,7 @@ POST http://localhost:8080/api/chirps
 Content-Type: application/json
 
 {
-  "body": "This is a kerfuffle opinion I need to share with the world"
+  "body": "This is a kerfuffle opinion I need to share with the world",
   "user_id": "8ddaff6d-d02d-4c8b-9553-87935ad17a7c"
 }
 
